@@ -26,16 +26,16 @@ The codebase is strictly modularized, separating data preprocessing, model defin
 └── run_ablation.py      # Multi-seed execution for Structural Ablation Study
 ```
 ## Prerequisites
-
+```text
 The framework requires Python 3.10+ and a CUDA-enabled GPU for optimal performance. Key dependencies include:
     torch >= 2.0.0
     torch_geometric >= 2.3.0
     pandas >= 2.0.0
     numpy >= 1.24.0
     scikit-learn >= 1.2.0
-
+```
 ## Usage and Reproducibility
-
+```text
 To ensure strict statistical rigor, all execution scripts (run_*.py) automatically iterate over 5 predefined random seeds ([42, 123, 777, 1024, 2026]), aggregating the results and computing the final Mean ± Standard Deviation for all classification metrics.
 
 1. Data Preparation
@@ -62,3 +62,4 @@ python run_hybrid.py
 4. Running the Ablation Study
 To empirically validate the emergent behavior of the adaptive gating mechanism under structural collapse (Algorithmic Drift), run the structural ablation script:
 python run_ablation.py
+```
