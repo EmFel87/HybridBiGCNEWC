@@ -40,7 +40,7 @@ The framework requires Python 3.10+ and a CUDA-enabled GPU for optimal performan
 
     
 ## Usage and Reproducibility
-```text
+
 To ensure strict statistical rigor, all execution scripts (run_*.py) automatically iterate over 5 predefined random seeds ([42, 123, 777, 1024, 2026]), aggregating the results and computing the final Mean ± Standard Deviation for all classification metrics.
 
 1. Data Preparation
@@ -54,6 +54,7 @@ python preprocessing/03_feature_extraction_topological.py
 
 
 2. Running the Baselines
+3. 
 Evaluate the isolated modalities under temporal domain shift:
 
 - Evaluates purely textual features (Concept Drift vulnerability)
