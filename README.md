@@ -54,7 +54,6 @@ python preprocessing/03_feature_extraction_topological.py
 
 
 2. Running the Baselines
-3. 
 Evaluate the isolated modalities under temporal domain shift:
 
 - Evaluates purely textual features (Concept Drift vulnerability)
@@ -67,7 +66,6 @@ python run_topological.py
 
 
 3. Running the Hybrid Model & Continual Learning
-
 This is the core experiment of the paper. It sequentially performs:
 
 - Historical training on PHEME.
@@ -80,5 +78,6 @@ python run_hybrid.py
 
 4. Running the Ablation Study
 To empirically validate the emergent behavior of the adaptive gating mechanism under structural collapse (Algorithmic Drift), run the structural ablation script:
+
 python run_ablation.py
-```
+
