@@ -236,7 +236,7 @@ def train_and_evaluate_single_seed(
         test_size=0.30, random_state=seed, stratify=labels_pheme,
     )
     val_graphs, test_graphs = train_test_split(
-        temp_graphs, temp_labels,
+        temp_graphs,
         test_size=0.50, random_state=seed, stratify=temp_labels,
     )
 
