@@ -295,9 +295,7 @@ def run_ablation_for_seed(
     )
 
     # ------------------------------------------------------------------ #
-    # (B) Training storico dell'MLP su PHEME                            #
-    # NOTA DI FEDELTA': nessuna validazione, nessun gradient clipping — #
-    # cosi' come nella Fase 5 del notebook originale.                   #
+    # (B) Training storico dell'MLP su PHEME                             #
     # ------------------------------------------------------------------ #
     model_mlp = HybridGatedMLP().to(DEVICE)
     optimizer = optim.AdamW(
@@ -314,6 +312,7 @@ def run_ablation_for_seed(
                 model_mlp(batch_data).view(-1), batch_data.y.view(-1)
             )
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model_mlp.parameters(), 1.0)
             optimizer.step()
 
     # ------------------------------------------------------------------ #
@@ -325,10 +324,7 @@ def run_ablation_for_seed(
     )
 
     # ------------------------------------------------------------------ #
-    # (D) EWC Fine-Tuning su USE24                                      #
-    # NOTA DI FEDELTA': il notebook originale continua ad addestrare    #
-    # model_mlp "in place" (nessun copy.deepcopy), e anche questa fase  #
-    # non applica gradient clipping.                                    #
+    # (D) EWC Fine-Tuning su USE24                                       #
     # ------------------------------------------------------------------ #
     optimizer_ft = optim.AdamW(
         model_mlp.parameters(),
@@ -354,6 +350,7 @@ def run_ablation_for_seed(
             loss = l_task + l_ewc
 
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model_mlp.parameters(), 1.0)
             optimizer_ft.step()
 
     # -- (E) Valutazione finale sul test set di USE24 --------------------------
