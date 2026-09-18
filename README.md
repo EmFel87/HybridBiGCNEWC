@@ -72,6 +72,8 @@ This is the core experiment of the paper. It sequentially performs:
 * Historical training on PHEME.
 * Naive Fine-Tuning on USE24-XD (measuring Catastrophic Forgetting).
 * EWC Fine-Tuning on USE24-XD (measuring Memory Retention and Plasticity).
+* Fisher Information Matrix tracking by parameter group.
+* Gate clamping and classification head refitting to empirically validate branch load-bearing post-EWC.
 * EWC Elasticity Parameter Sensitivity Analysis.
 
 ```bash
