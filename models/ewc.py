@@ -174,3 +174,23 @@ def compute_ewc_penalty(
             penalty  += (fisher * (param - opt_param).pow(2)).sum()
 
     return (lambda_val / 2.0) * penalty
+
+def compute_fisher_group_stats(
+    fisher_dict: dict[str, torch.Tensor],
+    param_masks: dict[str, list[str]]
+) -> dict[str, dict[str, float]]:
+    """Estrae media, mediana e numero di parametri della FIM raggruppati per macro-componente."""
+    stats = {}
+    for group_name, prefixes in param_masks.items():
+        g_vals = []
+        for n, tensor in fisher_dict.items():
+            if any(pref in n for pref in prefixes):
+                g_vals.append(tensor.flatten())
+        if g_vals:
+            g_vals = torch.cat(g_vals)
+            stats[group_name] = {
+                "mean": float(g_vals.mean().item()),
+                "median": float(g_vals.median().item()),
+                "num": int(g_vals.numel())
+            }
+    return stats
