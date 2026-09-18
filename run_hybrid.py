@@ -47,7 +47,7 @@ from torch_geometric.loader import DataLoader
 from sklearn.model_selection import train_test_split
 
 from models.hybrid import HybridGatedBiGCN
-from models.ewc import compute_fisher_matrix, compute_ewc_penalty
+from models.ewc import compute_fisher_matrix, compute_ewc_penalty, compute_fisher_group_stats
 from utils import (
     DEVICE,
     set_seed,
@@ -210,6 +210,7 @@ def evaluate_model(
     model:  HybridGatedBiGCN,
     loader: DataLoader,
     device: torch.device,
+    force_alpha: float | None = None
 ) -> dict:
     """Esegue l'inferenza su un DataLoader PyG e calcola le metriche complete.
 
@@ -229,7 +230,7 @@ def evaluate_model(
     with torch.no_grad():
         for batch_data in loader:
             batch_data = batch_data.to(device)
-            probs = torch.sigmoid(model(batch_data).view(-1))
+            probs = torch.sigmoid(model(batch_data, force_alpha=force_alpha).view(-1))
             all_preds.extend((probs > 0.5).float().cpu().numpy())
             all_labels.extend(batch_data.y.view(-1).cpu().numpy())
 
@@ -268,6 +269,41 @@ def get_alpha(
             _ = model(batch_data)
             alphas.append(model.last_alpha.mean().item())
     return float(np.mean(alphas))
+
+def refit_head(
+    base_model: HybridGatedBiGCN,
+    train_loader: DataLoader,
+    test_loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+    force_alpha: float,
+    epochs: int = 3
+) -> dict:
+    """Ricalibra esclusivamente il classificatore finale isolando la testa."""
+    m_refit = copy.deepcopy(base_model)
+    
+    # 1. Congela la rete
+    for p in m_refit.parameters():
+        p.requires_grad = False
+        
+    # 2. Scongela la testa di classificazione e resetta i pesi
+    for layer in [m_refit.fc1, m_refit.fc2]:
+        layer.reset_parameters()
+        for p in layer.parameters():
+            p.requires_grad = True
+
+    opt_r = optim.AdamW(filter(lambda p: p.requires_grad, m_refit.parameters()), lr=0.001)
+    m_refit.train()
+    
+    for _ in range(epochs):
+        for batch_data in train_loader:
+            batch_data = batch_data.to(device)
+            opt_r.zero_grad()
+            loss = criterion(m_refit(batch_data, force_alpha=force_alpha).view(-1), batch_data.y.view(-1))
+            loss.backward()
+            opt_r.step()
+            
+    return evaluate_model(m_refit, test_loader, device, force_alpha=force_alpha)
 
 
 # ##############################################################################
@@ -445,6 +481,14 @@ def run_experiment_for_seed(
         criterion=criterion, device=DEVICE,
     )
 
+    fisher_param_masks = {
+        'Semantic projection': ['text_proj'],
+        'GCN layers (TD + BU)': ['td_conv', 'bu_conv', 'graph_proj'],
+        'Gating layer': ['gate'],
+        'Classifier head': ['fc1', 'fc2']
+    }
+    fisher_stats = compute_fisher_group_stats(fisher_dict, fisher_param_masks)
+
     model_naive = copy.deepcopy(model)
     opt_naive = optim.AdamW(
         model_naive.parameters(),
@@ -467,6 +511,9 @@ def run_experiment_for_seed(
     metrics_pheme_naive = evaluate_model(
         model_naive, test_loader_ph, DEVICE
     )
+    
+    metrics_use24_naive = evaluate_model(model_naive, test_loader_u24, DEVICE)
+    
     print(
         f"[Seed {seed}] PHEME Naive (Backward Transfer) -> "
         f"F1-Fake: {metrics_pheme_naive['f1_fake']:.4f}"
@@ -508,6 +555,12 @@ def run_experiment_for_seed(
     metrics_pheme_ewc = evaluate_model(model_ewc, test_loader_ph, DEVICE)
     metrics_use24_ewc = evaluate_model(model_ewc, test_loader_u24, DEVICE)
     alpha_use24_ewc   = get_alpha(model_ewc, test_loader_u24, DEVICE)
+
+    metrics_clamp_alpha1 = evaluate_model(model_ewc, test_loader_u24, DEVICE, force_alpha=1.0)
+    metrics_clamp_alpha0 = evaluate_model(model_ewc, test_loader_u24, DEVICE, force_alpha=0.0)
+
+    metrics_refit_alpha1 = refit_head(model_ewc, train_loader_u24, test_loader_u24, criterion, DEVICE, force_alpha=1.0)
+    metrics_refit_alpha0 = refit_head(model_ewc, train_loader_u24, test_loader_u24, criterion, DEVICE, force_alpha=0.0)
 
     print(
         f"[Seed {seed}] PHEME EWC (Backward Transfer) -> "
@@ -564,9 +617,15 @@ def run_experiment_for_seed(
         "alpha_pheme":         alpha_pheme,
         "alpha_use24_cold":    alpha_use24_cold,
         "metrics_pheme_naive": metrics_pheme_naive,
+        "metrics_use24_naive": metrics_use24_naive,
         "metrics_pheme_ewc":   metrics_pheme_ewc,
         "metrics_use24_ewc":   metrics_use24_ewc,
         "alpha_use24_ewc":     alpha_use24_ewc,
+        "fisher_stats":        fisher_stats,
+        "metrics_clamp_alpha1": metrics_clamp_alpha1,
+        "metrics_clamp_alpha0": metrics_clamp_alpha0,
+        "metrics_refit_alpha1": metrics_refit_alpha1,
+        "metrics_refit_alpha0": metrics_refit_alpha0,
         "lambda_f1":           lambda_f1,
     }
 
@@ -594,6 +653,16 @@ if __name__ == "__main__":
     res_pheme_naive = init_results_dict()
     res_pheme_ewc   = init_results_dict()
     res_use24_ewc   = init_results_dict()
+    res_use24_naive  = init_results_dict()
+    res_clamp_alpha1 = init_results_dict()
+    res_clamp_alpha0 = init_results_dict()
+    res_refit_alpha1 = init_results_dict()
+    res_refit_alpha0 = init_results_dict()
+    
+    fisher_stats_all_seeds = {
+        'Semantic projection': [], 'GCN layers (TD + BU)': [],
+        'Gating layer': [], 'Classifier head': []
+    }
 
     alpha_vals: dict[str, list[float]] = {
         "pheme":      [],
@@ -628,6 +697,14 @@ if __name__ == "__main__":
         append_run_results(res_pheme_naive, results["metrics_pheme_naive"])
         append_run_results(res_pheme_ewc, results["metrics_pheme_ewc"])
         append_run_results(res_use24_ewc, results["metrics_use24_ewc"])
+        append_run_results(res_use24_naive, results["metrics_use24_naive"])
+        append_run_results(res_clamp_alpha1, results["metrics_clamp_alpha1"])
+        append_run_results(res_clamp_alpha0, results["metrics_clamp_alpha0"])
+        append_run_results(res_refit_alpha1, results["metrics_refit_alpha1"])
+        append_run_results(res_refit_alpha0, results["metrics_refit_alpha0"])
+
+        for g_name, stats in results["fisher_stats"].items():
+            fisher_stats_all_seeds[g_name].append(stats)
 
         alpha_vals["pheme"].append(results["alpha_pheme"])
         alpha_vals["use24_cold"].append(results["alpha_use24_cold"])
@@ -645,11 +722,24 @@ if __name__ == "__main__":
 
     print_stats("1. PHEME BASELINE", res_pheme_base)
     print_stats("2. USE24 (COLD TEST)", res_use24_cold)
-    print_stats("3. PHEME BACKWARD TRANSFER (NAIVE)", res_pheme_naive)
-    print_stats("4. PHEME BACKWARD TRANSFER (EWC)", res_pheme_ewc)
-    print_stats("5. USE24 POST-EWC (BiGCN)", res_use24_ewc)
+    print_stats("3. USE24 POST-NAIVE", res_use24_naive)
+    print_stats("4. PHEME BACKWARD TRANSFER (NAIVE)", res_pheme_naive)
+    print_stats("5. PHEME BACKWARD TRANSFER (EWC)", res_pheme_ewc)
+    print_stats("6. USE24 POST-EWC (BiGCN)", res_use24_ewc)
 
-    print("\n--- 6. GATE ALPHA BEHAVIOR ---")
+    print("\n--- 7. FISHER MATRIX (Mean / Median) ---")
+    for group_name in fisher_stats_all_seeds.keys():
+        means = [s['mean'] for s in fisher_stats_all_seeds[group_name]]
+        num = fisher_stats_all_seeds[group_name][0]['num']
+        print(f"{group_name.ljust(22)} | Params: {num:<6} | Mean: {np.mean(means):.4e}")
+
+    print("\n--- 8. GATE ABLATION & REFIT ---")
+    print_stats("CLAMP ALPHA=1 (Spegne Topologico, Solo Semantico)", res_clamp_alpha1)
+    print_stats("CLAMP ALPHA=0 (Spegne Semantico, Solo Topologico)", res_clamp_alpha0)
+    print_stats("REFIT HEAD ALPHA=1 (Spegne Topologico, Ricalibra)", res_refit_alpha1)
+    print_stats("REFIT HEAD ALPHA=0 (Spegne Semantico, Ricalibra)", res_refit_alpha0)
+
+    print("\n--- 9. GATE ALPHA BEHAVIOR ---")
     print(
         f"Alpha PHEME storici : "
         f"{np.mean(alpha_vals['pheme']):.4f} ± "
@@ -666,7 +756,7 @@ if __name__ == "__main__":
         f"{np.std(alpha_vals['use24_ewc']):.4f}"
     )
 
-    print("\n--- 7. LAMBDA SENSITIVITY ---")
+    print("\n--- 10. LAMBDA SENSITIVITY ---")
     for lambda_val in LAMBDA_VALS:
         values = res_lambda[lambda_val]
         print(
