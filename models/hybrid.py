@@ -125,7 +125,7 @@ class HybridGatedBiGCN(nn.Module):
         # le proiezioni al di fuori del modello.
         self.last_alpha: torch.Tensor | None = None
 
-    def forward(self, data: "torch_geometric.data.Batch") -> torch.Tensor:
+    def forward(self, data: "torch_geometric.data.Batch", force_alpha: float | None = None) -> torch.Tensor:
         """Calcola il logit binario per un batch di grafi.
 
         Args:
@@ -178,6 +178,9 @@ class HybridGatedBiGCN(nn.Module):
         alpha = self.gate(
             torch.cat([z_sem, z_topo], dim=1)
         )  # [B, common_dim]
+
+        if force_alpha is not None:
+            alpha = torch.full_like(alpha, force_alpha)
 
         # Salvataggio dell'ultimo alpha calcolato, isolato dal grafo
         # computazionale tramite detach(): consente l'ispezione del
