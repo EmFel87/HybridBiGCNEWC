@@ -19,7 +19,7 @@ The codebase is strictly modularized, separating data preprocessing, model defin
 │   ├── semantic.py      # Semantic Baseline (BERTweet [CLS] MLP)
 │   ├── topological.py   # Topological Baseline (Bi-directional GCN)
 │   ├── hybrid.py        # Hybrid Gated BiGCN Architecture
-│   ├── ewc.py           # Elastic Weight Consolidation (Fisher Matrix & Penalty)
+│   ├── ewc.py           # Elastic Weight Consolidation (Fisher Matrix, Penalty & Per-Group Stats)
 │   └── ablation.py      # Ablation Model (Hybrid Gated MLP without message passing)
 ├── utils.py             # Shared utilities (Seed setting, Metrics, Aggregation)
 ├── run_semantic.py      # Multi-seed execution for Semantic Baseline
@@ -39,6 +39,7 @@ The framework requires **Python 3.10+** and a **CUDA-enabled GPU** for optimal p
 * `pandas >= 2.0.0`
 * `numpy >= 1.24.0`
 * `scikit-learn >= 1.2.0`
+* `matplotlib >= 3.7.0`
 
 ---
 
@@ -70,7 +71,7 @@ Evaluate the isolated modalities under temporal domain shift:
 ### 3. Running the Hybrid Model & Continual Learning
 This is the core experiment of the paper. It sequentially performs:
 * Historical training on PHEME.
-* Naive Fine-Tuning on USE24-XD (measuring Catastrophic Forgetting).
+* Naive Fine-Tuning on USE24-XD, evaluated on the USE24-XD test set itself (plasticity baseline) and, upon re-evaluation, on the historical PHEME test set (measuring Catastrophic Forgetting).
 * EWC Fine-Tuning on USE24-XD (measuring Memory Retention and Plasticity).
 * Fisher Information Matrix tracking by parameter group.
 * Gate clamping and classification head refitting to empirically validate branch load-bearing post-EWC.
