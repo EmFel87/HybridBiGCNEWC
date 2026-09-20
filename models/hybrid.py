@@ -61,7 +61,8 @@ class HybridGatedBiGCN(nn.Module):
             ``alpha`` su un dataset per confrontare quanto il modello
             si affida al testo vs alla topologia). Non fa parte del
             grafo computazionale e non deve essere usato per il
-            backward pass.
+            backward pass. Quando ``force_alpha`` è impostato riflette
+            il valore forzato del vettore.
     """
 
     def __init__(
@@ -125,7 +126,11 @@ class HybridGatedBiGCN(nn.Module):
         # le proiezioni al di fuori del modello.
         self.last_alpha: torch.Tensor | None = None
 
-    def forward(self, data: "torch_geometric.data.Batch", force_alpha: float | None = None) -> torch.Tensor:
+    def forward(
+        self,
+        data: "torch_geometric.data.Batch",
+        force_alpha: float | None = None,
+    ) -> torch.Tensor:
         """Calcola il logit binario per un batch di grafi.
 
         Args:
@@ -139,6 +144,16 @@ class HybridGatedBiGCN(nn.Module):
                   ``ptr``        — indici di inizio per ogni grafo
                       nel batch, usati per estrarre il nodo radice
                       di ciascuna cascata.
+            force_alpha: Se diverso da ``None``, sovrascrive il gate
+                appreso con un valore scalare costante, propagato a
+                tutte le componenti di ``alpha`` tramite
+                ``torch.full_like``. Usato esclusivamente per gli
+                studi di ablation sul gate:
+                  ``force_alpha=1.0`` annulla il contributo
+                    topologico ($h = z_{sem}$).
+                  ``force_alpha=0.0`` annulla il contributo
+                    semantico ($h = z_{topo}$).
+                  ``None`` (default) lascia il gate appreso invariato.
 
         Returns:
             Tensore Float32 ``[B, 1]`` con logit non normalizzati.
