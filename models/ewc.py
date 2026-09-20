@@ -2,11 +2,14 @@
 # FILE:    models/ewc.py
 # SCOPO:   Logica di Continual Learning tramite Elastic Weight
 #          Consolidation (EWC) per il progetto "Fake News Detection:
-#          2016 vs 2024". Contiene esclusivamente le funzioni per il
-#          calcolo della Fisher Information Matrix (FIM) diagonale sul
-#          task storico (PHEME) e per il calcolo della penale
-#          quadratica EWC applicata durante il fine-tuning sul task
-#          recente (USE24).
+#          2016 vs 2024". Contiene le funzioni per il calcolo della
+#          Fisher Information Matrix (FIM) diagonale sul task
+#          storico (PHEME) e per il calcolo della penale quadratica
+#          EWC applicata durante il fine-tuning sul task recente
+#          (USE24).
+#          Contiene inoltre compute_fisher_group_stats, che aggrega la
+#          FIM diagonale per gruppo di parametri (usata per l'analisi
+#          Fisher per componente riportata nel paper).
 #          Questo modulo e' agnostico rispetto all'architettura: opera
 #          su qualsiasi nn.Module tramite named_parameters(), e non
 #          contiene alcun riferimento specifico a HybridGatedBiGCN.
@@ -175,11 +178,43 @@ def compute_ewc_penalty(
 
     return (lambda_val / 2.0) * penalty
 
+
 def compute_fisher_group_stats(
     fisher_dict: dict[str, torch.Tensor],
     param_masks: dict[str, list[str]]
-) -> dict[str, dict[str, float]]:
-    """Estrae media, mediana e numero di parametri della FIM raggruppati per macro-componente."""
+) -> dict[str, dict[str, float | int]]:
+    """Aggrega la Fisher Information Matrix diagonale per gruppo di parametri.
+
+    Raggruppa i tensori di ``fisher_dict`` in base a ``param_masks``:
+    un parametro entra in un gruppo se il suo nome contiene almeno uno
+    dei prefissi associati a quel gruppo. Per ciascun gruppo i valori
+    vengono appiattiti e concatenati, da cui si calcolano media,
+    mediana e numero totale di parametri.
+
+    La distinzione tra media e mediana e' rilevante in pratica: la
+    distribuzione della FIM diagonale e' tipicamente molto asimmetrica
+    (pochi parametri con gradiente quadratico alto, la maggioranza
+    vicino a zero), per cui la mediana e' una misura piu' robusta
+    della "tipica" importanza di un parametro nel gruppo.
+
+    Nota: un gruppo il cui prefisso non corrisponde a nessun parametro
+    viene silenziosamente omesso dal dizionario restituito (non
+    compare come chiave). Il chiamante che itera su un insieme fisso
+    di nomi di gruppo attesi deve tenerne conto.
+
+    Args:
+        fisher_dict: FIM diagonale prodotta da
+            ``compute_fisher_matrix``, ovvero
+            ``{nome_parametro: tensore}``.
+        param_masks: Dizionario ``{nome_gruppo: lista_di_prefissi}``.
+            Un parametro entra nel gruppo se il suo nome contiene
+            almeno uno dei prefissi elencati.
+
+    Returns:
+        Dizionario ``{nome_gruppo: {"mean": float, "median": float,
+        "num": int}}``. Un gruppo senza corrispondenze e' assente dal
+        risultato (vedi Nota sopra).
+    """
     stats = {}
     for group_name, prefixes in param_masks.items():
         g_vals = []
