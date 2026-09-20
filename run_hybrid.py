@@ -81,6 +81,13 @@ USE24_LABEL_MAP: dict[str, int] = {
     "speculation":    0,
 }
 
+FISHER_PARAM_GROUPS = {
+    'Semantic projection': ['text_proj'],
+    'GCN layers (TD + BU)': ['td_conv', 'bu_conv', 'graph_proj'],
+    'Gating layer': ['gate'],
+    'Classifier head': ['fc1', 'fc2']
+}
+
 # -- Protocollo multi-seed -----------------------------------------------------
 SEEDS = [42, 123, 777, 1024, 2026]
 
@@ -93,6 +100,10 @@ CLIP_NORM      = 1.0
 EPOCHS_MAIN    = 15   # Training storico su PHEME (Fase B)
 EPOCHS_FT      = 5    # Fine-tuning Naive ed EWC su USE24 (Fasi C, D)
 EPOCHS_LAMBDA  = 3    # Fine-tuning breve per la sensitivity analysis (Fase E)
+
+# -- Iperparametri di training per il refit con gate bloccato ----------------
+REFIT_EPOCHS   = 3
+REFIT_LR       = 1e-3
 
 # -- Coefficiente EWC per il fine-tuning principale (Fase D) -----------------
 LAMBDA_EWC     = 50000
@@ -210,7 +221,7 @@ def evaluate_model(
     model:  HybridGatedBiGCN,
     loader: DataLoader,
     device: torch.device,
-    force_alpha: float | None = None
+    force_alpha: float | None = None,
 ) -> dict:
     """Esegue l'inferenza su un DataLoader PyG e calcola le metriche complete.
 
@@ -218,6 +229,10 @@ def evaluate_model(
         model:  Istanza di ``HybridGatedBiGCN`` da valutare.
         loader: DataLoader PyG del set di valutazione.
         device: Dispositivo di calcolo.
+        force_alpha: Se diverso da ``None``, propagato al forward del
+            modello per bloccare il gate a un valore costante (vedi
+            ``HybridGatedBiGCN.forward``). ``None`` lascia il gate
+            appreso invariato.
 
     Returns:
         Dizionario prodotto da ``compute_classification_metrics``
@@ -277,9 +292,36 @@ def refit_head(
     criterion: nn.Module,
     device: torch.device,
     force_alpha: float,
-    epochs: int = 3
+    epochs: int = REFIT_EPOCHS
 ) -> dict:
-    """Ricalibra esclusivamente il classificatore finale isolando la testa."""
+    """Ricalibra la sola testa di classificazione con il gate clampato.
+
+    Isola l'effetto del clamping del gate dal confound della scala
+    della rappresentazione fusa: quando ``alpha`` viene forzato a una
+    costante, ``h_hybrid`` cambia distribuzione rispetto al regime di
+    training originale (dove il gate era appreso), e il classificatore
+    finale (fc1, fc2) potrebbe non essere calibrato per la nuova scala.
+    Questa funzione congela l'intera rete, reinizializza e riaddestra
+    esclusivamente fc1/fc2 sotto il clamp fissato, cosi' che il
+    confronto tra rami (Tabella gate ablation) misuri la capacita'
+    discriminativa del ramo superstite, non un artefatto di scala.
+
+    Args:
+        base_model:   Modello di partenza (tipicamente ``model_ewc``),
+            clonato internamente e non modificato.
+        train_loader: DataLoader PyG per il fine-tuning della testa.
+        test_loader:  DataLoader PyG per la valutazione finale.
+        criterion:    Funzione di loss condivisa con il resto del run.
+        device:       Dispositivo di calcolo.
+        force_alpha:  Valore costante del gate (1.0 disabilita il
+            topologico, 0.0 disabilita il semantico).
+        epochs:       Numero di epoche di ricalibrazione della testa.
+            Default: 3.
+
+    Returns:
+        Dizionario prodotto da ``compute_classification_metrics`` sul
+        modello ricalibrato, valutato con lo stesso ``force_alpha``.
+    """
     m_refit = copy.deepcopy(base_model)
     
     # 1. Congela la rete
@@ -292,7 +334,7 @@ def refit_head(
         for p in layer.parameters():
             p.requires_grad = True
 
-    opt_r = optim.AdamW(filter(lambda p: p.requires_grad, m_refit.parameters()), lr=0.001)
+    opt_r = optim.AdamW(filter(lambda p: p.requires_grad, m_refit.parameters()), lr=REFIT_LR)
     m_refit.train()
     
     for _ in range(epochs):
@@ -380,9 +422,15 @@ def run_experiment_for_seed(
           ``metrics_pheme_base``, ``metrics_use24_cold``,
           ``train_loss_history``, ``val_loss_history``,
           ``alpha_pheme``, ``alpha_use24_cold``,
-          ``metrics_pheme_naive``,
+          ``metrics_pheme_naive``, ``metrics_use24_naive``,
           ``metrics_pheme_ewc``, ``metrics_use24_ewc``,
-          ``alpha_use24_ewc``,
+          ``alpha_use24_ewc``, ``fisher_stats``
+            (dizionario ``{nome_gruppo: {"mean", "median", "num"}}``
+            prodotto da ``compute_fisher_group_stats``),
+          ``metrics_clamp_alpha1``, ``metrics_clamp_alpha0``
+            (valutazione con gate clampato, nessun ri-addestramento),
+          ``metrics_refit_alpha1``, ``metrics_refit_alpha0``
+            (gate clampato + testa di classificazione ricalibrata),
           ``lambda_f1``: dizionario ``{lambda_val: f1_fake}`` per
             questo seed.
     """
@@ -481,13 +529,7 @@ def run_experiment_for_seed(
         criterion=criterion, device=DEVICE,
     )
 
-    fisher_param_masks = {
-        'Semantic projection': ['text_proj'],
-        'GCN layers (TD + BU)': ['td_conv', 'bu_conv', 'graph_proj'],
-        'Gating layer': ['gate'],
-        'Classifier head': ['fc1', 'fc2']
-    }
-    fisher_stats = compute_fisher_group_stats(fisher_dict, fisher_param_masks)
+    fisher_stats = compute_fisher_group_stats(fisher_dict, FISHER_PARAM_GROUPS)
 
     model_naive = copy.deepcopy(model)
     opt_naive = optim.AdamW(
@@ -511,9 +553,9 @@ def run_experiment_for_seed(
     metrics_pheme_naive = evaluate_model(
         model_naive, test_loader_ph, DEVICE
     )
-    
+
     metrics_use24_naive = evaluate_model(model_naive, test_loader_u24, DEVICE)
-    
+
     print(
         f"[Seed {seed}] PHEME Naive (Backward Transfer) -> "
         f"F1-Fake: {metrics_pheme_naive['f1_fake']:.4f}"
@@ -648,18 +690,18 @@ if __name__ == "__main__":
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_w)
 
     # -- Dizionari di aggregazione multi-seed ----------------------------------
-    res_pheme_base  = init_results_dict(include_loss_history=True)
-    res_use24_cold  = init_results_dict()
-    res_pheme_naive = init_results_dict()
-    res_pheme_ewc   = init_results_dict()
-    res_use24_ewc   = init_results_dict()
+    res_pheme_base   = init_results_dict(include_loss_history=True)
+    res_use24_cold   = init_results_dict()
+    res_pheme_naive  = init_results_dict()
+    res_pheme_ewc    = init_results_dict()
+    res_use24_ewc    = init_results_dict()
     res_use24_naive  = init_results_dict()
     res_clamp_alpha1 = init_results_dict()
     res_clamp_alpha0 = init_results_dict()
     res_refit_alpha1 = init_results_dict()
     res_refit_alpha0 = init_results_dict()
-    
-    fisher_stats_all_seeds = {
+
+    fisher_stats_all_seeds: dict[str, list[dict]] = {
         'Semantic projection': [], 'GCN layers (TD + BU)': [],
         'Gating layer': [], 'Classifier head': []
     }
@@ -729,9 +771,13 @@ if __name__ == "__main__":
 
     print("\n--- 7. FISHER MATRIX (Mean / Median) ---")
     for group_name in fisher_stats_all_seeds.keys():
-        means = [s['mean'] for s in fisher_stats_all_seeds[group_name]]
+        means   = [s['mean']   for s in fisher_stats_all_seeds[group_name]]
+        medians = [s['median'] for s in fisher_stats_all_seeds[group_name]]
         num = fisher_stats_all_seeds[group_name][0]['num']
-        print(f"{group_name.ljust(22)} | Params: {num:<6} | Mean: {np.mean(means):.4e}")
+        print(
+            f"{group_name.ljust(22)} | Params: {num:<6} | "
+            f"Mean: {np.mean(means):.4e} | Median: {np.mean(medians):.4e}"
+        )
 
     print("\n--- 8. GATE ABLATION & REFIT ---")
     print_stats("CLAMP ALPHA=1 (Spegne Topologico, Solo Semantico)", res_clamp_alpha1)
