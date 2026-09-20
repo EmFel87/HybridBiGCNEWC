@@ -8,19 +8,27 @@
 #            (B) Training storico su PHEME (15 epoche), valutazione su
 #                PHEME e sul campione a freddo di USE24 (Concept Drift),
 #                estrazione del comportamento del gate (alpha).
-#            (C) Estrazione della Fisher Information Matrix su PHEME e
+#            (C) Estrazione della Fisher Information Matrix su PHEME,
+#                aggregata anche per gruppo di parametri (Tabella 7), e
 #                fine-tuning Naive (senza EWC) su USE24, per misurare la
-#                Dimenticanza Catastrofica sul test set di PHEME.
+#                Dimenticanza Catastrofica sul test set di PHEME e la
+#                plasticita' sul test set di USE24.
 #            (D) Fine-tuning EWC su USE24 (lambda=50000), valutazione su
 #                PHEME (Backward Transfer) e USE24 (adattamento),
-#                estrazione del gate post-EWC.
+#                estrazione del gate post-EWC. Segue lo studio di
+#                ablation sul gate (Tabella 8): valutazione con il gate
+#                clampato (alpha=1, alpha=0) sia a pesi invariati sia
+#                dopo il refit della sola testa di classificazione.
 #            (E) Analisi di sensitivita' su lambda: per ciascun valore
 #                in [0, 10000, 25000, 50000, 100000], fine-tuning breve
 #                (3 epoche) e misurazione della F1-Fake di retention su
 #                PHEME.
 #          L'Ablation Study con HybridGatedMLP (Fase 5 del notebook) e'
 #          deliberatamente esclusa da questo script: verra' gestita in
-#          un modulo separato.
+#          un modulo separato. I paired t-test sui confronti F1-Fake
+#          (Ibrido vs Topologico, EWC vs Naive) sono anch'essi esclusi
+#          deliberatamente: verranno centralizzati in un modulo dedicato
+#          per evitare disallineamenti tra i set di valori confrontati.
 #          L'architettura e' importata da models.hybrid, la logica EWC
 #          da models.ewc, le utility di riproducibilita', metriche e
 #          aggregazione dei risultati da utils.
@@ -81,13 +89,6 @@ USE24_LABEL_MAP: dict[str, int] = {
     "speculation":    0,
 }
 
-FISHER_PARAM_GROUPS = {
-    'Semantic projection': ['text_proj'],
-    'GCN layers (TD + BU)': ['td_conv', 'bu_conv', 'graph_proj'],
-    'Gating layer': ['gate'],
-    'Classifier head': ['fc1', 'fc2']
-}
-
 # -- Protocollo multi-seed -----------------------------------------------------
 SEEDS = [42, 123, 777, 1024, 2026]
 
@@ -110,6 +111,16 @@ LAMBDA_EWC     = 50000
 
 # -- Valori di lambda per l'analisi di sensitivita' (Fase E) -----------------
 LAMBDA_VALS: list[int] = [0, 10000, 25000, 50000, 100000]
+
+# -- Gruppi di parametri per l'analisi Fisher per componente (Tabella 7) -----
+#    Ogni gruppo e' definito da uno o piu' prefissi che devono comparire
+#    nel nome del parametro (named_parameters() di HybridGatedBiGCN).
+FISHER_PARAM_GROUPS: dict[str, list[str]] = {
+    "Semantic projection":   ["text_proj"],
+    "GCN layers (TD + BU)":  ["td_conv", "bu_conv", "graph_proj"],
+    "Gating layer":          ["gate"],
+    "Classifier head":       ["fc1", "fc2"],
+}
 
 
 # ##############################################################################
@@ -292,7 +303,7 @@ def refit_head(
     criterion: nn.Module,
     device: torch.device,
     force_alpha: float,
-    epochs: int = REFIT_EPOCHS
+    epochs: int = REFIT_EPOCHS,
 ) -> dict:
     """Ricalibra la sola testa di classificazione con il gate clampato.
 
@@ -375,18 +386,33 @@ def run_experiment_for_seed(
         entrambi i test set.
     (C) Naive Fine-Tuning: la Fisher Information Matrix viene
         calcolata sul training set di PHEME a partire dal modello
-        storico. Un clone indipendente (``model_naive``, tramite
-        ``copy.deepcopy``) viene poi addestrato su USE24 senza alcun
-        vincolo EWC, per ``EPOCHS_FT`` epoche, e infine valutato sul
-        test set di PHEME per quantificare la Dimenticanza
-        Catastrofica.
+        storico, sia in forma diagonale completa (per la penale EWC
+        della fase (D)) sia aggregata per gruppo di parametri tramite
+        ``compute_fisher_group_stats`` (Tabella 7 del paper: proiezione
+        semantica, layer GCN, gate, testa di classificazione). Un
+        clone indipendente (``model_naive``, tramite ``copy.deepcopy``
+        a partire dal modello storico) viene poi addestrato su USE24
+        senza alcun vincolo EWC, per ``EPOCHS_FT`` epoche, e infine
+        valutato sia sul test set di PHEME, per quantificare la
+        Dimenticanza Catastrofica, sia sul test set di USE24, per
+        misurare la plasticita' del fine-tuning naive sul nuovo
+        dominio (termine di confronto per la Fase (D)).
     (D) EWC Fine-Tuning: un secondo clone indipendente
-        (``model_ewc``) viene addestrato su USE24 con la penale EWC
-        (coefficiente ``LAMBDA_EWC``) calcolata da
+        (``model_ewc``, anch'esso a partire dal modello storico, non
+        da ``model_naive``) viene addestrato su USE24 con la penale
+        EWC (coefficiente ``LAMBDA_EWC``) calcolata da
         ``compute_ewc_penalty`` rispetto alla FIM e ai pesi storici
         estratti in (C). Il modello risultante e' valutato sia su
         PHEME (Backward Transfer) che su USE24 (adattamento al nuovo
-        task), e il suo gate viene ispezionato su USE24.
+        task), e il suo gate viene ispezionato su USE24. Segue lo
+        studio di ablation sul gate (Tabella 8): il gate di
+        ``model_ewc`` viene clampato a ``alpha=1.0`` (disabilita il
+        ramo topologico) e ``alpha=0.0`` (disabilita il ramo
+        semantico), valutando sia a pesi invariati (``evaluate_model``
+        con ``force_alpha``) sia dopo un refit della sola testa di
+        classificazione (``refit_head``), che isola la capacita'
+        discriminativa del ramo superstite dall'eventuale confound di
+        scala introdotto dal clamping.
     (E) Lambda Sensitivity: per ciascun valore in ``LAMBDA_VALS``, un
         ulteriore clone del modello storico viene sottoposto a un
         fine-tuning breve (``EPOCHS_LAMBDA`` epoche) su USE24 con
