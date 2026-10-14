@@ -25,7 +25,8 @@ The codebase is strictly modularized, separating data preprocessing, model defin
 ├── run_semantic.py      # Multi-seed execution for Semantic Baseline
 ├── run_topological.py   # Multi-seed execution for Topological Baseline
 ├── run_hybrid.py        # Multi-seed execution for Hybrid Model & Continual Learning
-└── run_ablation.py      # Multi-seed execution for Structural Ablation Study
+├── run_ablation.py      # Multi-seed execution for Structural Ablation Study
+└── run_revision_experiments.py      # 20-seed execution for paper review (see section 'NEW PROTOCOL 20-SEEDS')
 ```
 
 ---
@@ -90,7 +91,7 @@ python run_ablation.py
 
 ---
 ## NEW PROTOCOL 20-SEEDS
-## Run
+### Run
 
 **Step 1: smoke test (about 5 minutes).** This checks that the whole pipeline runs, using 1 seed, 1 epoch and a USE24 subsample.
 
@@ -115,7 +116,7 @@ The durations are estimates for a T4. The first seed's printed time gives you th
 
 **If time is short**, `--seeds 14` limits `main` and `controls` to the first 14 initialisation seeds. That is the minimum the power analysis in the paper supports. Run `select_lambda` before `main`, because `main` uses the λ chosen there.
 
-## What each stage does
+### What each stage does
 
 | Stage | Purpose |
 |---|---|
@@ -126,7 +127,7 @@ The durations are estimates for a T4. The first seed's printed time gives you th
 | `lofo` | Leave-one-event-out on PHEME: train on four events and test on the fifth, for the hybrid, graph-only and semantic-only models, with 3 seeds. |
 | `summarize` | Writes `summary.json` and `summary.md`: means ± SD, paired t-tests, 95% CIs and d_z. |
 
-## Differences from the original protocol (intentional)
+### Differences from the original protocol (intentional)
 
 - **Fixed split.** The PHEME and USE24 splits are fixed with `random_state=42`, and only the initialisation seed varies. This is what Reviewer 3 requested.
 - **USE24 validation split.** 10% of the USE24 training partition is held out as validation, so fine-tuning uses the remaining 90%.
