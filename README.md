@@ -87,3 +87,47 @@ To empirically validate the emergent behavior of the adaptive gating mechanism u
 ```bash
 python run_ablation.py
 ```
+
+---
+## NEW PROTOCOL 20-SEEDS
+## Run
+
+**Step 1: smoke test (about 5 minutes).** This checks that the whole pipeline runs, using 1 seed, 1 epoch and a USE24 subsample.
+
+```python
+!python run_revision_experiments.py --stage all --quick
+```
+
+**Step 2: the real runs, in this order.**
+
+```python
+!python run_revision_experiments.py --stage equivalence     # ~1 min
+!python run_revision_experiments.py --stage select_lambda   # ~2-3 h
+!python run_revision_experiments.py --stage main            # ~4-6 h (20 seeds)
+!python run_revision_experiments.py --stage controls        # ~2-3 h
+!python run_revision_experiments.py --stage lofo            # ~1 h
+!python run_revision_experiments.py --stage summarize       # seconds
+```
+
+The durations are estimates for a T4. The first seed's printed time gives you the real figure.
+
+**If Colab disconnects**, just re-run the same command. Every finished unit (one seed, one condition) is saved to Drive immediately and skipped on the next run.
+
+**If time is short**, `--seeds 14` limits `main` and `controls` to the first 14 initialisation seeds. That is the minimum the power analysis in the paper supports. Run `select_lambda` before `main`, because `main` uses the λ chosen there.
+
+## What each stage does
+
+| Stage | Purpose |
+|---|---|
+| `equivalence` | Transfers weights from the GCN model to the node-wise MLP variant, then compares outputs and gradients on single-node graphs (real USE24 and random inputs). Multi-node PHEME graphs are included as a control where the outputs must differ. |
+| `select_lambda` | Chooses λ using **validation data only**: PHEME validation for retention, and a 10% USE24 validation split for plasticity. It uses a fixed split and 5 seeds, and a rule fixed in advance (see the code). No test set is used. |
+| `main` | Confirmatory runs on a **fixed split with 20 initialisation seeds**. For each seed: naive fine-tuning, EWC(λ\*), and uniform (L2-SP-like) anchoring (plus EWC at 50,000 if λ\* differs). It also records the gate trajectory per epoch, displacement and realised penalty per parameter group, and clamped-gate results with and without head refit. It computes calibration (ECE, Brier) and keeps the confusion matrices. |
+| `controls` | PHEME models trained under **one matched protocol**: graph-only and semantic-only (root-only) variants, edge-removed graphs with the same node features, single-node graphs, static concatenation, and a fixed (input-independent) gate. |
+| `lofo` | Leave-one-event-out on PHEME: train on four events and test on the fifth, for the hybrid, graph-only and semantic-only models, with 3 seeds. |
+| `summarize` | Writes `summary.json` and `summary.md`: means ± SD, paired t-tests, 95% CIs and d_z. |
+
+## Differences from the original protocol (intentional)
+
+- **Fixed split.** The PHEME and USE24 splits are fixed with `random_state=42`, and only the initialisation seed varies. This is what Reviewer 3 requested.
+- **USE24 validation split.** 10% of the USE24 training partition is held out as validation, so fine-tuning uses the remaining 90%.
+- **Gradient clipping in the λ search.** The λ search uses the full 5-epoch protocol with clipping.
